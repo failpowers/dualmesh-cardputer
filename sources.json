@@ -1,0 +1,10 @@
+{
+  "meshtastic": {
+    "repository": "https://github.com/meshtastic/firmware.git",
+    "revision": "eaba8b95bebab04c4f13a27b63e000ebdc1e5fac"
+  },
+  "meshcore": {
+    "repository": "https://github.com/martinemde/MeshCore.git",
+    "revision": "ecc79b6b6fdd2cde7860cbb2518010e170d04904"
+  }
+}

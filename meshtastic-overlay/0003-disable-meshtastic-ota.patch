@@ -1,0 +1,31 @@
+From: DualMesh overlay
+Subject: [PATCH] Disable Meshtastic OTA loader lookup for DualMesh
+
+Pinned base: meshtastic/firmware eaba8b95bebab04c4f13a27b63e000ebdc1e5fac.
+DualMesh uses ota_1 for MeshCore, not the Meshtastic OTA loader. Return no
+loader partition for this environment and reject null partition descriptors.
+Other environments retain the upstream partition lookup.
+---
+diff --git a/src/platform/esp32/MeshtasticOTA.cpp b/src/platform/esp32/MeshtasticOTA.cpp
+index ce59188..d7438fa 100644
+--- a/src/platform/esp32/MeshtasticOTA.cpp
++++ b/src/platform/esp32/MeshtasticOTA.cpp
+@@ -66,11 +66,18 @@ void saveConfig(meshtastic_Config_NetworkConfig *network, meshtastic_OTAMode met
+ 
+ const esp_partition_t *getAppPartition()
+ {
++#ifdef DUALMESH
++    // ota_1 contains MeshCore, not a Meshtastic OTA loader.
++    return nullptr;
++#else
+     return esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, NULL);
++#endif
+ }
+ 
+ bool getAppDesc(const esp_partition_t *part, esp_app_desc_t *app_desc)
+ {
++    if (part == nullptr)
++        return false;
+     if (esp_ota_get_partition_description(part, app_desc) != ESP_OK) {
+         LOG_INFO("esp_ota_get_partition_description failed");
+         return false;

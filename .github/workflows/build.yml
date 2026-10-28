@@ -1,182 +1,31 @@
-﻿name: Build DualMesh firmware
-
-# Produces real, compiled M5Burner-ready .bin files for the Cardputer ADV DualMesh
-# launcher + Meshtastic + MeshCore build, using GitHub's own runners (full, unrestricted
-# network access to platformio.org and Espressif's component registry — this workflow is
-# the actual verification path this project's own README recommends, see "Building" there).
-#
-# Usage: push this repo to GitHub (or fork it), then either wait for the push trigger or
-# run it manually from the Actions tab ("Run workflow"). When it finishes, open the run
-# and download the "dualmesh-cardputer-adv-bin" artifact — it contains one merged
-# dualmesh-cardputer-adv-full.bin (flash this single file at offset 0x0 in M5Burner's
-# "burn custom firmware" flow) plus the individual bootloader/partition-table/app images
-# for anyone who wants to flash slots individually with esptool instead.
+name: Build DualMesh firmware
 
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
-    paths-ignore:
-      - '**.md'
+    branches: [main]
+    paths-ignore: ['**.md']
+  pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - name: Check out this repo (DualMesh overlay)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
-          path: dualmesh
-
-      - name: Check out Meshtastic firmware (upstream)
-        uses: actions/checkout@v4
-        with:
-          repository: meshtastic/firmware
-          path: meshtastic
-          submodules: recursive
-
-      - name: Check out MeshCore firmware (upstream)
-        uses: actions/checkout@v4
-        with:
-          repository: ripplebiz/MeshCore
-          path: meshcore
-          submodules: recursive
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install PlatformIO
-        run: pip install -U platformio
-
-      - name: Install esptool
-        # PlatformIO bundles its own private copy of esptool for its own internal use (uploading
-        # over serial), but that copy isn't registered as a top-level importable module for the
-        # system python3 -- `python3 -m esptool` in the Merge step below needs its own real pip
-        # install of the esptool package.
-        run: pip install -U esptool
-
-      - name: Install the DualMesh overlay into the Meshtastic checkout
-        run: |
-          set -euo pipefail
-          MT="$GITHUB_WORKSPACE/meshtastic"
-          DM="$GITHUB_WORKSPACE/dualmesh"
-          DEST="$MT/variants/esp32s3/m5stack_cardputer_adv_dualmesh"
-          mkdir -p "$DEST"
-          cp "$MT/variants/esp32s3/m5stack_cardputer_adv/pins_arduino.h" "$DEST/"
-          cp "$MT/variants/esp32s3/m5stack_cardputer_adv/variant.h" "$DEST/"
-          cp "$DM/common/dualmesh_ota.h" "$DEST/"
-          cp "$DM/common/board_pins_cardputer_adv.h" "$DEST/"
-          cp "$DM/partitions_dualmesh.csv" "$DEST/"
-          cp "$DM/meshtastic-overlay/platformio_dualmesh_env.ini" "$DEST/platformio.ini"
-          cd "$MT"
-          git apply "$DM/meshtastic-overlay/0001-add-return-to-launcher-hook.patch"
-
-      - name: Install the DualMesh overlay into the MeshCore checkout
-        run: |
-          set -euo pipefail
-          MC="$GITHUB_WORKSPACE/meshcore"
-          DM="$GITHUB_WORKSPACE/dualmesh"
-          DEST="$MC/variants/cardputer_adv"
-          mkdir -p "$DEST"
-          cp "$DM"/meshcore-cardputer/variants/cardputer_adv/*.h "$DEST/"
-          cp "$DM"/meshcore-cardputer/variants/cardputer_adv/*.cpp "$DEST/"
-          cp "$DM/meshcore-cardputer/platformio.ini" "$DEST/platformio.ini"
-          cp "$DM/common/dualmesh_ota.h" "$DEST/"
-          cp "$DM/common/board_pins_cardputer_adv.h" "$DEST/"
-          cp "$DM/partitions_dualmesh.csv" "$DEST/"
-          cd "$MC"
-          git apply "$DM/meshcore-cardputer/0001-add-return-to-launcher-hook.patch"
-          git apply "$DM/meshcore-cardputer/0002-st7789lcddisplay-cardputer-adv-panel.patch"
-          git apply "$DM/meshcore-cardputer/0003-spiffs-mc-data-partition-label.patch"
-
-      - name: Build launcher (factory slot)
-        run: cd dualmesh/launcher && pio run -e cardputer_adv_launcher
-
-      - name: Build Meshtastic (ota_0 slot)
-        run: cd meshtastic && pio run -e m5stack-cardputer-adv-dualmesh
-
-      - name: Locate Meshtastic's real output binary
-        # Meshtastic's own platformio-custom.py renames its output away from the generic
-        # firmware.bin PlatformIO would normally produce -- PROGNAME embeds the app version
-        # plus a git short-hash (e.g. firmware-m5stack-cardputer-adv-dualmesh-2.8.0.7239fe8.bin),
-        # and that suffix changes on every meshtastic/firmware commit, so it can never be
-        # hardcoded. The same build dir also contains a *.factory.bin (Meshtastic's own
-        # self-merged bootloader+partitions+boot_app0+app image at ITS OWN standalone-board
-        # offsets, 0x10000 -- wrong for this project's shared DualMesh table, which puts the
-        # Meshtastic app at 0x110000) and littlefs-*.bin -- both must be excluded, we want only
-        # the plain, unmerged app image (part_name: 'app0').
-        run: |
-          set -euo pipefail
-          MT_BUILD="meshtastic/.pio/build/m5stack-cardputer-adv-dualmesh"
-          MT_BIN=""
-          for f in "$MT_BUILD"/firmware-*.bin; do
-            case "$f" in
-              *.factory.bin) continue ;;
-            esac
-            MT_BIN="$f"
-          done
-          if [ -z "$MT_BIN" ] || [ ! -f "$MT_BIN" ]; then
-            echo "::error::Could not find Meshtastic's output binary under $MT_BUILD (looked for firmware-*.bin, excluding *.factory.bin). Contents:"
-            ls -la "$MT_BUILD" || true
-            exit 1
-          fi
-          echo "Found Meshtastic app image: $MT_BIN"
-          echo "MT_BIN=$MT_BIN" >> "$GITHUB_ENV"
-
-      - name: Build MeshCore (ota_1 slot)
-        run: cd meshcore && pio run -e cardputer_adv_companion_radio_ble
-
-      - name: Verify each image fits its partition
-        run: |
-          set -euo pipefail
-          check() {
-            sz=$(stat -c%s "$1")
-            if [ "$sz" -gt "$2" ]; then
-              echo "::error::$3 image ($1) is $sz bytes, exceeds its $2-byte partition (see partitions_dualmesh.csv)"
-              exit 1
-            fi
-            echo "$3 image ($1): $sz / $2 bytes OK"
-          }
-          check "dualmesh/launcher/.pio/build/cardputer_adv_launcher/firmware.bin"  $((0x100000)) launcher
-          check "$MT_BIN" $((0x3A0000)) meshtastic
-          check "meshcore/.pio/build/cardputer_adv_companion_radio_ble/firmware.bin" $((0x200000)) meshcore
-
-      - name: Merge into one M5Burner-ready image
-        run: |
-          set -euo pipefail
-          mkdir -p out
-          LAUNCHER=dualmesh/launcher/.pio/build/cardputer_adv_launcher
-          MC_BUILD=meshcore/.pio/build/cardputer_adv_companion_radio_ble
-
-          # Single flat image spanning bootloader through the end of the ota_1 (MeshCore) app
-          # slot, at the exact offsets in partitions_dualmesh.csv. The spiffs/mc_data/coredump
-          # partitions past that point are intentionally left out — LittleFS/SPIFFS format
-          # themselves on first mount, same as a factory-fresh device, so there's nothing
-          # meaningful to pre-write there. Flash this single file at offset 0x0.
-          python3 -m esptool --chip esp32s3 merge_bin \
-            -o out/dualmesh-cardputer-adv-full.bin \
-            --flash_mode qio --flash_freq 80m --flash_size 8MB \
-            0x0      "$LAUNCHER/bootloader.bin" \
-            0x8000   "$LAUNCHER/partitions.bin" \
-            0x10000  "$LAUNCHER/firmware.bin" \
-            0x110000 "$MT_BIN" \
-            0x5B0000 "$MC_BUILD/firmware.bin"
-
-          # Also keep the individual images, for anyone who'd rather flash slots one at a time
-          # with esptool (see flash_all.sh) instead of M5Burner's single-file flow.
-          cp "$LAUNCHER/bootloader.bin"  out/bootloader.bin
-          cp "$LAUNCHER/partitions.bin"  out/partitions.bin
-          cp "$LAUNCHER/firmware.bin"    out/launcher-firmware.bin
-          cp "$MT_BIN"                   out/meshtastic-firmware.bin
-          cp "$MC_BUILD/firmware.bin"    out/meshcore-firmware.bin
-
-          ls -la out/
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+          python-version: '3.13'
+      - name: Install build tools
+        run: python -m pip install -r requirements-build.txt
+      - name: Test packaging and installer (no hardware)
+        run: python -m unittest discover -s tests -v
+      - name: Build pinned sources and package fresh install
+        run: python scripts/build.py --work-dir .build --output-dir dist
+      - uses: actions/upload-artifact@v4
         with:
           name: dualmesh-cardputer-adv-bin
-          path: out/
+          path: dist/
           retention-days: 90

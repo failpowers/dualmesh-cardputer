@@ -1,211 +1,124 @@
-# DualMesh — Meshtastic / MeshCore boot picker for the M5Stack Cardputer ADV
+# DualMesh for M5Stack Cardputer ADV
 
-Lets one Cardputer ADV + Cap LoRa-1262 run either Meshtastic or MeshCore, each at full power
-and full protocol fidelity, chosen from an on-device menu. It is **not** the two networks live
-at the same instant on the same radio — see "Why not truly concurrent?" below for why that
-option was ruled out, and what was built instead.
+Meshtastic and keyboard-enabled MeshCore on one **Cardputer ADV + Cap LoRa-1262**.
+Choose from a launcher; only one network runs at a time. Requires 8 MiB flash.
 
-## How it works
+## Install the same firmware as the reference device
 
-The ESP32-S3's flash is split into three app slots by `partitions_dualmesh.csv`: `factory`
-(this project's own tiny **launcher**), `ota_0` (a stock **Meshtastic** build), and `ota_1` (a
-**MeshCore** build in Companion Radio mode). The launcher is what boots by default. It shows a
-two-item menu, and when you pick one it calls `esp_ota_set_boot_partition()` and reboots
-straight into that slot — from then on the device boots directly into your choice, at full
-LoRa TX power, with none of the other slot's code even loaded into flash cache. Holding the
-BOOT button (GPIO0) for 3 seconds from inside either guest firmware jumps back to the launcher's
-menu.
-
-```
-common/                     Shared pin map + the OTA-slot-switching helper both other pieces use
-launcher/                   Standalone PlatformIO project — the boot-menu app (factory slot)
-meshtastic-overlay/         A few files to drop into your own meshtastic/firmware checkout
-meshcore-cardputer/         A new board variant to drop into your own MeshCore checkout
-partitions_dualmesh.csv     The shared partition table (all three builds must use this exact file)
-flash_all.sh                Builds all three and writes them to the device in one pass
-```
-
-## Why not truly concurrent?
-
-I looked into running both networks live at once and it isn't a good fit for this hardware —
-worth explaining so this doesn't read as a downgrade from what was asked for:
-
-- The Cardputer ADV's only LoRa radio is the single SX1262 on the Cap LoRa-1262 module, on a
-  fixed SPI bus. The board's one other expansion port exposes just two spare GPIOs — not enough
-  to wire a second radio's SPI+IRQ+reset+busy lines.
-- Meshtastic's `RadioLibInterface` and MeshCore's SX1262 wrapper are both built to exclusively
-  own that SPI bus and IRQ line (confirmed directly in MeshCore's own driver code).
-- Meshtastic and MeshCore use different default frequencies, spreading factors, and sync words —
-  a single radio can't be tuned to receive both at the same instant regardless of firmware.
-
-The realistic paths were: (a) two physical radios on two devices, bridged in software — the
-approach real prior art (e.g. the community Akita Meshtastic↔MeshCore bridge) already takes,
-full power on both, but it's two gadgets, not one; (b) one radio, duty-cycled between both
-protocols' channel parameters — genuinely one device, but each network only hears it part of the
-time, denting range/reliability on both; (c) this project's approach — full power, full
-reliability, one device, but one protocol live at a time. Given the choice, full power on
-whichever network you're actually using beat a compromise that would have made both weaker to
-get simultaneity that the radio can't really deliver anyway. If you'd rather have true
-simultaneity, option (a) is a straightforward variation on this same firmware — MeshCore's
-Companion Radio build here already runs standalone on any SX1262 ESP32-S3 board (Heltec V3,
-Xiao ESP32-S3, ...); you'd skip the launcher/partition-table complexity entirely and just run it
-on a second board next to the Cardputer.
-
-## RF power & regulatory compliance
-
-The SX1262's hardware ceiling is +22 dBm, and both firmwares are configured here to use it — but
-the legal maximum depends on your regulatory region (US915, EU868, etc. all differ in max power
-*and* duty cycle rules). Neither build here hardcodes a bypass of that: Meshtastic still exposes
-its normal region selector (set yours before transmitting — un-set/`Unset` region does not
-transmit), and MeshCore's power/frequency are still whatever you configure through its app. Pick
-the correct region for where you actually are; "as powerful as possible" here means "the
-hardware's ceiling, inside whatever your region actually allows," not "ignore the rules."
-
-## What you get in each slot
-
-**Meshtastic** (`ota_0`) is an unmodified build of the upstream, actively-maintained
-`m5stack-cardputer-adv` target — full on-device keyboard chat UI, GPS, the works. Nothing about
-Meshtastic itself was changed; the overlay only points its build at the shared partition table
-and adds the one-line return-to-launcher hook.
-
-**MeshCore** (`ota_1`) is built in **Companion Radio** mode (BLE by default, USB-serial as an
-alternate env), not on-device chat. This wasn't a shortcut: MeshCore's own closest hardware
-match to the Cardputer — the LilyGO T-Deck, the only other keyboard+color-screen+SX1262 board it
-supports — *also* only ships Companion Radio, repeater, and modem builds, not on-device chat,
-even though it has a keyboard. There's no documented on-device chat UI contract in MeshCore to
-build against safely for either board. Companion Radio is also MeshCore's most complete, most
-capable mode — full protocol feature set, official iOS/Android/web app pairing over BLE or USB —
-so it's the right call on its own merits, not just the safe one. The Cardputer's screen shows
-MeshCore's status UI (battery, radio state, contacts) via its existing ST7789 driver; you compose
-messages in the paired app, same as any other MeshCore companion node.
-
-## Building — the easy way (recommended): GitHub Actions
-
-`.github/workflows/build.yml` does the entire build for you, for free, on GitHub's own servers —
-no local PlatformIO install, and (unlike the sandbox this project was developed in) full,
-unrestricted network access to platformio.org's package registry and Espressif's component
-registry, which is what real ESP-IDF/Arduino builds need. This is the same approach Meshtastic
-and MeshCore themselves use to build their own official releases.
-
-1. Create a new **public** GitHub repo (private repos need a paid plan for Actions minutes on
-   some account tiers, but the free tier includes minutes for public repos) and push everything
-   in this folder to it — either via GitHub's "upload files" web UI, or:
+1. Download **dualmesh-cardputer-adv-reference.zip** from
+   [Releases](https://github.com/martinemde/dualmesh-cardputer/releases/latest).
+   Extract it. Do not use a random Actions run or a guest `factory.bin`.
+2. Clone this repository and install the pinned tools (Python 3.13 recommended):
+   ```sh
+   git clone https://github.com/martinemde/dualmesh-cardputer.git
+   cd dualmesh-cardputer
+   python3 -m venv .venv
+   .venv/bin/python -m pip install -r requirements-build.txt
    ```
-   cd dualmesh && git init && git add -A && git commit -m "DualMesh"
-   git remote add origin https://github.com/<you>/<repo>.git
-   git push -u origin main
+3. Connect the Cardputer by USB. Keep the LoRa antenna attached. Close serial
+   monitors. Enter download mode (hold BOOT while resetting/powering on, then
+   release BOOT). Identify its serial port explicitly.
+4. **This is a fresh install. It erases all settings, identities and messages.**
+   Backups contain private data: keep them outside the repository and do not share.
+   Run, replacing the paths and port:
+   ```sh
+   .venv/bin/python scripts/install.py \
+     --bundle /path/to/extracted-bundle \
+     --port /dev/cu.usbmodemXXXX \
+     --backup-dir /path/to/private-backups \
+     --confirm-erase
    ```
-2. On GitHub, open the repo's **Actions** tab. The push above triggers the workflow
-   automatically (or click **Run workflow** to trigger it by hand). It takes roughly 15-25
-   minutes — it's compiling three full ESP32 firmware images from source.
-3. When the run finishes (green check), open it and download the **dualmesh-cardputer-adv-bin**
-   artifact (bottom of the run page, under "Artifacts"). Unzip it.
-4. In **M5Burner**, use its custom/local firmware upload option, point it at
-   **`dualmesh-cardputer-adv-full.bin`** from that zip, and burn it to your Cardputer ADV at
-   flash offset **0x0**. That one file is bootloader + partition table + all three app slots
-   merged into a single flat image — it's the only file you need for M5Burner.
-   The zip also contains the five images unmerged (`bootloader.bin`, `partitions.bin`,
-   `launcher-firmware.bin`, `meshtastic-firmware.bin`, `meshcore-firmware.bin`) for anyone who'd
-   rather flash slots individually with `esptool` — see `flash_all.sh`, which does exactly that.
+   The installer checks bundle hashes, chip and flash size, requires two matching
+   8 MiB backups, writes at offset 0, and compares a complete readback. It does
+   not reboot automatically. Reset/power-cycle after it reports success.
 
-The workflow file is thoroughly commented if you want to see exactly what it's doing at each
-step; it's just automating the same manual sequence in "Building — manually" below.
+The release uses the same public application binaries as the reference device,
+with fresh storage—not a clone of someone's identities, settings or bonds.
+See `manifest.json`, `SHA256SUMS` and `SOURCES.md` in the bundle.
 
-## Building — manually
+### Existing DualMesh devices
 
-If you'd rather build locally (or want to modify something first), you need your own local
-checkouts of both upstream projects (not included here — this repo only ever ships the *delta*
-on top of them, so you can `git pull` upstream normally):
+**Do not use the full image to update an existing installation.** It resets all
+storage. Advanced slot-only updates need a full verified backup and readback,
+the exact matching partition table, and the raw app at the correct offset below.
+Do not use PlatformIO upload, uploadfs, either guest's factory bundle, or either
+firmware's self-OTA: ordinary A/B OTA can overwrite the other guest.
 
-```
-git clone https://github.com/meshtastic/firmware.git
-git clone https://github.com/ripplebiz/MeshCore.git
-pip install platformio
-```
+## Use
 
-**1. Launcher** — fully self-contained, nothing to merge:
-```
-cd launcher && pio run -e cardputer_adv_launcher
-```
+- Tap BOOT to select Meshtastic or MeshCore; hold about 1.2 seconds to launch.
+- After release, no input for 5 seconds launches the last choice.
+- Hold BOOT for 3 seconds in either guest to return to the launcher.
+- MeshCore: press **M** on home, choose a contact, type, **Enter** to queue a message.
+  BLE Companion Radio remains available. Add contacts through the app.
+- Both firmwares default to **US/915 MHz**. These defaults are not legal everywhere.
+  Set the correct region and match the local network's frequency/modem settings.
+- MeshCore's default pairing PIN is `123456`; change it in your own configuration.
+- The two guests have separate Bluetooth identities on each device. The change
+  preserves Meshtastic's local IRK while updating its address association; a phone
+  may still need to forget the old pairing. Phone reconnection tests are pending.
 
-**2. Meshtastic overlay:**
-```
-MT=/path/to/your/meshtastic/firmware
-mkdir -p "$MT/variants/esp32s3/m5stack_cardputer_adv_dualmesh"
-cp "$MT/variants/esp32s3/m5stack_cardputer_adv/"{pins_arduino.h,variant.h} \
-   "$MT/variants/esp32s3/m5stack_cardputer_adv_dualmesh/"
-cp common/dualmesh_ota.h common/board_pins_cardputer_adv.h partitions_dualmesh.csv \
-   "$MT/variants/esp32s3/m5stack_cardputer_adv_dualmesh/"
-cp meshtastic-overlay/platformio_dualmesh_env.ini \
-   "$MT/variants/esp32s3/m5stack_cardputer_adv_dualmesh/platformio.ini"
-cd "$MT" && git apply /path/to/dualmesh/meshtastic-overlay/0001-add-return-to-launcher-hook.patch
-pio run -e m5stack-cardputer-adv-dualmesh
-```
+## What this repository owns
 
-**3. MeshCore overlay:**
-```
-MC=/path/to/your/MeshCore
-mkdir -p "$MC/variants/cardputer_adv"
-cp meshcore-cardputer/variants/cardputer_adv/*.{h,cpp} "$MC/variants/cardputer_adv/"
-cp meshcore-cardputer/platformio.ini "$MC/variants/cardputer_adv/platformio.ini"
-cp common/dualmesh_ota.h common/board_pins_cardputer_adv.h partitions_dualmesh.csv \
-   "$MC/variants/cardputer_adv/"
-cd "$MC"
-git apply /path/to/dualmesh/meshcore-cardputer/0001-add-return-to-launcher-hook.patch
-git apply /path/to/dualmesh/meshcore-cardputer/0002-st7789lcddisplay-cardputer-adv-panel.patch
-git apply /path/to/dualmesh/meshcore-cardputer/0003-spiffs-mc-data-partition-label.patch
-pio run -e cardputer_adv_companion_radio_ble
+The launcher, shared partition layout, guest integration patches and build tools.
+It fetches full guest sources from the pinned revisions in `sources.json`:
+
+- Meshtastic `eaba8b95bebab04c4f13a27b63e000ebdc1e5fac` plus patches in
+  `meshtastic-overlay/` (return hook, Bluetooth separation, self-OTA guard).
+- [`martinemde/MeshCore`, `cardputer-adv`](https://github.com/martinemde/MeshCore/tree/cardputer-adv)
+  at `ecc79b6b6fdd2cde7860cbb2518010e170d04904`, containing the keyboard and
+  Cardputer hardware support. DualMesh applies **only**
+  `meshcore-cardputer/0004-cardputer-keyboard-dualmesh.patch` and shared files.
+  Legacy MeshCore patches 0001–0003 and the old board overlay are not used.
+
+The MeshCore integration supports only `M5Stack_Cardputer_ADV_companion_radio_ble`.
+Do not use its other standalone environments with the DualMesh partition table.
+
+## Build from source
+
+With the tools above installed:
+
+```sh
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python scripts/build.py --work-dir .build --output-dir dist
 ```
 
-**4. Flash everything at once:**
-```
-./flash_all.sh "$MT" "$MC" /dev/ttyACM0   # port is optional, esptool will try to auto-detect
-```
+The build uses fresh pinned checkouts, applies all integration changes, compiles
+three apps and the **1 MiB Meshtastic filesystem**, and packages `dist/`. It does
+not access hardware. Use a new/empty work directory for each clean build.
+GitHub Actions runs the same command; download `dualmesh-cardputer-adv-bin` from
+a successful run. Build timestamps/tool metadata can change binary hashes; use
+the reference release when exact reference app bytes matter.
 
-## ⚠️ Not yet verified on real hardware
+PlatformIO packages are isolated per firmware to prevent Arduino/IDF versions
+from replacing one another. The build includes the local SCons-package fix needed
+by Meshtastic's pinned platform. No personal device settings are used.
 
-Every pin number and board macro above was pulled from actual upstream source (not guessed), the
-partition table's arithmetic was checked programmatically, and — as of 2026-08-30 — **all four
-patch files were re-verified by applying them with `git apply` against fresh, live clones of the
-real `meshtastic/firmware` and `ripplebiz/MeshCore` `main` branches; all four applied cleanly with
-no fuzz or offset warnings.**
+## Flash layout
 
-**All three environments have since been fully compiled successfully via the GitHub Actions
-workflow above, on a real, unrestricted-network runner:** launcher, Meshtastic
-(`m5stack-cardputer-adv-dualmesh`), and MeshCore (`cardputer_adv_companion_radio_ble`) all reach a
-clean link with real memory-usage tables. Along the way two real bugs were found and fixed by
-that first full run: MeshCore needed `Preferences` added to `lib_deps` explicitly (its
-`examples/companion_radio/main.cpp` sits outside `src_dir`, so PlatformIO's Library Dependency
-Finder doesn't auto-detect that framework header the way it does for Meshtastic's `src/main.cpp`),
-and this workflow's own Verify/Merge steps were hardcoded to a plain `firmware.bin` path for
-Meshtastic that doesn't actually exist — Meshtastic's own `platformio-custom.py` build script
-renames its output to `firmware-<env>-<version>.<git-hash>.bin`, a name that changes on every
-meshtastic/firmware commit. Both are now fixed (see the workflow file and `flash_all.sh`, which
-both now locate that file dynamically instead of assuming a fixed name). What has **not** been
-done from this side: nothing has touched real hardware yet.
+| Component | Offset | Capacity |
+|---|---:|---:|
+| MeshCore IDF4 bootloader | `0x0` | 32 KiB |
+| Shared partition table | `0x8000` | 4 KiB |
+| Launcher | `0x10000` | 1 MiB |
+| Meshtastic | `0x110000` | 3.625 MiB |
+| Meshtastic LittleFS | `0x4B0000` | 1 MiB |
+| MeshCore | `0x5B0000` | 2 MiB |
+| MeshCore storage | `0x7B0000` | 256 KiB |
 
-Watch the Actions log for any compiler errors (upstream drift is the most likely remaining
-failure mode — a patch hunk that no longer applies cleanly fails the workflow with a clear error
-naming which file and patch; the fix is usually just re-locating the one or two lines each patch
-adds, using the "if this hunk fails" notes inside each patch file), and test the launcher's
-boot-menu and the return-to-launcher hold-to-exit gesture on real hardware before relying on it
-day to day.
+See `partitions_dualmesh.csv` for NVS, boot selection and coredump regions. The
+fresh-install image is a full 8 MiB with blank NVS/boot selection/MeshCore storage.
+The older MeshCore bootloader is used for the mixed IDF versions; launcher and
+guest-generated merged bundles must not be substituted.
 
-## Using it
+## Verification and limits
 
-- Power on: the launcher shows **Meshtastic** / **MeshCore**. Tap BOOT to cycle, hold ~1.2s to
-  boot the highlighted one. No input for 5s auto-boots your last choice (defaults to Meshtastic
-  the very first time).
-- From inside either firmware: hold BOOT for 3s to jump back to this menu.
-- Do not use Meshtastic's or MeshCore's own "check for firmware update" features on this build —
-  each project's self-OTA mechanism assumes it owns both halves of a two-slot A/B layout, and
-  would write into the *other* project's slot here, corrupting this partition layout. Reflash
-  with `flash_all.sh` instead when you want to update either side.
+The reference binaries were built successfully and their installation was checked
+by flash readback. The launcher orientation and guest switching were observed.
+The source reconstruction for both guests is checked against the local installed
+build sources. This does **not** establish complete radio, GPS, keyboard/chat or
+Bluetooth reconnection testing on every device. Installer tests use fake hardware;
+preparing this repository does not flash or reboot the reference device.
 
-## Extending this
-
-The most valuable next step, if you want it, is a real on-device MeshCore chat UI (instead of
-Companion Radio) — genuinely new work, not something to shortcut, since it means implementing
-against MeshCore's `UIScreen`/on-device-UI pattern from scratch with no existing keyboard-driven
-reference to build from. Happy to take a run at that as a follow-up if you want the Cardputer's
-own keyboard driving MeshCore chat directly instead of pairing with a phone.
+Upstream Meshtastic, MeshCore and their dependencies retain their licenses. The
+bundle includes source links and integration instructions in `SOURCES.md`.

@@ -1,0 +1,99 @@
+diff --git a/examples/companion_radio/main.cpp b/examples/companion_radio/main.cpp
+index 839d495..ed87c75 100644
+--- a/examples/companion_radio/main.cpp
++++ b/examples/companion_radio/main.cpp
+@@ -1,4 +1,5 @@
+ #include <Arduino.h>   // needed for PlatformIO
++#include "dualmesh_ota.h" // DualMesh: return-to-launcher hook
+ #include <Mesh.h>
+ #include "MyMesh.h"
+ 
+@@ -119,7 +120,15 @@ MyMesh the_mesh(radio_driver, fast_rng, rtc_clock, tables, store);
+ /* END GLOBAL OBJECTS */
+ 
+ void halt() {
++#ifdef M5STACK_CARDPUTER_ADV
++  // Keep the launcher reachable even if radio initialization failed in setup().
++  while (1) {
++    dualmesh::ReturnHook::poll();
++    delay(10);
++  }
++#else
+   while (1) ;
++#endif
+ }
+ 
+ /* WIFI RECONNECT TRACKERS */
+@@ -178,7 +187,7 @@ void setup() {
+   store.begin();
+   the_mesh.begin();
+ #elif defined(ESP32)
+-  SPIFFS.begin(true);
++  SPIFFS.begin(true, "/spiffs", 10, "mc_data"); // DualMesh: keep MeshCore data out of Meshtastic storage
+   store.begin();
+   the_mesh.begin();
+ #else
+@@ -290,6 +299,7 @@ void setup() {
+ }
+ 
+ void loop() {
++  dualmesh::ReturnHook::poll(); // DualMesh: hold BOOT 3s to return to the app picker
+   the_mesh.loop();
+   interface_manager.loop();
+   sensors.loop();
+diff --git a/examples/companion_radio/ui-new/UITask.cpp b/examples/companion_radio/ui-new/UITask.cpp
+index 951577b..f283c35 100644
+--- a/examples/companion_radio/ui-new/UITask.cpp
++++ b/examples/companion_radio/ui-new/UITask.cpp
+@@ -1356,7 +1356,12 @@ void UITask::loop() {
+   }
+ #elif defined(PIN_USER_BTN)
+   int ev = user_btn.check();
+-  #ifdef UI_HAS_NAV_INPUT
++  #if defined(M5STACK_CARDPUTER_ADV)
++  // BOOT hold belongs to DualMesh; do not enter CLI rescue before its 3s hook.
++  if (ev == BUTTON_EVENT_CLICK) {
++    c = checkDisplayOn(KEY_NEXT);
++  }
++  #elif defined(UI_HAS_NAV_INPUT)
+   if (ev == BUTTON_EVENT_CLICK) {
+     c = checkDisplayOn(KEY_ENTER);
+   } else if (ev == BUTTON_EVENT_LONG_PRESS) {
+diff --git a/variants/m5stack_cardputer_adv/M5CardputerBoard.h b/variants/m5stack_cardputer_adv/M5CardputerBoard.h
+index 7625cb3..6fbe1ad 100644
+--- a/variants/m5stack_cardputer_adv/M5CardputerBoard.h
++++ b/variants/m5stack_cardputer_adv/M5CardputerBoard.h
+@@ -37,6 +37,10 @@ public:
+     Serial.println(" mV");
+   }
+ 
++  bool startOTAUpdate(const char*, char[]) override {
++    return false; // DualMesh owns both OTA slots.
++  }
++
+   uint16_t getBattMilliVolts() override {
+     // Battery voltage on GPIO 10 with 2:1 voltage divider
+     uint32_t sum = 0;
+diff --git a/variants/m5stack_cardputer_adv/platformio.ini b/variants/m5stack_cardputer_adv/platformio.ini
+index 49d7baf..d41b8ec 100644
+--- a/variants/m5stack_cardputer_adv/platformio.ini
++++ b/variants/m5stack_cardputer_adv/platformio.ini
+@@ -5,7 +5,9 @@ board_build.mcu = esp32s3
+ board_build.f_cpu = 240000000L
+ board_build.f_flash = 80000000L
+ board_build.flash_mode = qio
+-board_build.partitions = default_8MB.csv
++board_build.partitions = variants/m5stack_cardputer_adv/partitions_dualmesh.csv
++board_build.app_partition_name = ota_1
++board_build.filesystem = spiffs
+ build_flags =
+   ${esp32_base.build_flags}
+   -I variants/m5stack_cardputer_adv
+@@ -51,6 +53,7 @@ build_src_filter = ${esp32_base.build_src_filter}
+ 
+ lib_deps =
+   ${esp32_base.lib_deps}
++  Preferences
+   adafruit/Adafruit GFX Library @ ^1.12.1
+   M5Cardputer=https://github.com/m5stack/M5Cardputer
+ 

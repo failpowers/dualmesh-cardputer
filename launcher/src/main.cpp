@@ -53,6 +53,7 @@ bool keypadOk = false;
 int selected = 0;
 uint32_t deadlineAt = 0;
 bool buttonWasDown = false;
+bool buttonReady = false;
 uint32_t pressStartMs = 0;
 
 void resetDeadline() { deadlineAt = millis() + kAutoBootMs; }
@@ -111,8 +112,16 @@ void confirmAndBoot() {
   const MenuItem &item = kMenu[selected];
   drawBooting(item.label);
   Serial.printf("[launcher] booting slot %d (%s)\n", (int)item.slot, item.label);
-  dualmesh::bootInto(item.slot);
-  // unreachable — bootInto() restarts the device
+  if (!dualmesh::bootInto(item.slot)) {
+    tft.fillScreen(ST77XX_BLACK);
+    tft.setTextSize(1);
+    tft.setCursor(6, 55);
+    tft.print("Boot failed. Check firmware image.");
+    delay(2000);
+    buttonReady = false;
+    resetDeadline();
+    drawMenu();
+  }
 }
 
 } // namespace
@@ -129,7 +138,7 @@ void setup() {
 
   tftSPI.begin(DM_TFT_SCK, DM_TFT_MISO, DM_TFT_MOSI, DM_TFT_CS);
   tft.init(DM_TFT_HEIGHT, DM_TFT_WIDTH); // panel is mounted landscape; see setRotation below
-  tft.setRotation(1);
+  tft.setRotation(3);
   tft.fillScreen(ST77XX_BLACK);
 
   Wire.begin(DM_I2C_SDA, DM_I2C_SCL);
@@ -158,6 +167,14 @@ void setup() {
 void loop() {
   bool buttonDown = digitalRead(DM_BUTTON_PIN) == LOW;
   uint32_t now = millis();
+
+  // A guest returns while BOOT is still held. Require release before selecting.
+  if (!buttonReady) {
+    resetDeadline();
+    if (!buttonDown) buttonReady = true;
+    delay(10);
+    return;
+  }
 
   if (buttonDown && !buttonWasDown) {
     pressStartMs = now;

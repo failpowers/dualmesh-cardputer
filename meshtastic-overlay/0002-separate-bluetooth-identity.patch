@@ -1,0 +1,82 @@
+diff --git i/src/nimble/NimbleBluetooth.cpp w/src/nimble/NimbleBluetooth.cpp
+index e01c32c..e7975b4 100644
+--- i/src/nimble/NimbleBluetooth.cpp
++++ w/src/nimble/NimbleBluetooth.cpp
+@@ -27,6 +27,9 @@
+ #ifdef ARCH_ESP32
+ #include <nvs.h>
+ #include <nvs_flash.h>
++#ifdef DUALMESH
++#include <esp_mac.h>
++#endif
+ #endif
+ 
+ namespace
+@@ -86,6 +89,48 @@ static void purgeIncompatibleBleBonds()
+ }
+ #endif
+ 
++#if defined(ARCH_ESP32) && defined(DUALMESH)
++// NimBLE stores one local IRK, keyed by controller public address. Re-key it
++// before host init so changing the address does not regenerate it every boot.
++static esp_err_t migrateDualMeshLocalIrk(const uint8_t *btMac)
++{
++    nvs_handle_t handle;
++    esp_err_t err = nvs_open("nimble_bond", NVS_READWRITE, &handle);
++    if (err == ESP_ERR_NVS_NOT_FOUND) {
++        return ESP_OK;
++    }
++    if (err != ESP_OK) {
++        return err;
++    }
++
++    struct ble_store_value_local_irk record;
++    size_t size = sizeof(record);
++    err = nvs_get_blob(handle, "local_irk_1", &record, &size);
++    if (err == ESP_OK) {
++        if (size != sizeof(record)) {
++            err = ESP_ERR_NVS_INVALID_LENGTH;
++        } else {
++            ble_addr_t identity = {};
++            identity.type = BLE_ADDR_PUBLIC;
++            for (size_t i = 0; i < sizeof(identity.val); ++i) {
++                identity.val[i] = btMac[5 - i]; // NimBLE uses little-endian addresses.
++            }
++            if (record.addr.type != identity.type || memcmp(record.addr.val, identity.val, sizeof(identity.val)) != 0) {
++                record.addr = identity;
++                err = nvs_set_blob(handle, "local_irk_1", &record, sizeof(record));
++                if (err == ESP_OK) {
++                    err = nvs_commit(handle);
++                }
++            }
++        }
++    } else if (err == ESP_ERR_NVS_NOT_FOUND) {
++        err = ESP_OK;
++    }
++    nvs_close(handle);
++    return err;
++}
++#endif
++
+ // Debugging options: careful, they slow things down quite a bit!
+ // #define DEBUG_NIMBLE_ON_READ_TIMING  // uncomment to time onRead duration
+ // #define DEBUG_NIMBLE_ON_WRITE_TIMING // uncomment to time onWrite duration
+@@ -920,7 +965,18 @@ void NimbleBluetooth::setup()
+     purgeIncompatibleBleBonds(); // wipe bonds left in an incompatible on-disk format (post-upgrade)
+ #endif
+ 
++#if defined(ARCH_ESP32) && defined(DUALMESH)
++    // MeshCore uses the factory Bluetooth EUI (base + 1 on this board).
++    // Meshtastic uses the chip's factory base EUI, leaving Wi-Fi/node IDs alone.
++    uint8_t btMac[6];
++    ESP_ERROR_CHECK(esp_efuse_mac_get_default(btMac));
++    ESP_ERROR_CHECK(migrateDualMeshLocalIrk(btMac));
++    ESP_ERROR_CHECK(esp_iface_mac_addr_set(btMac, ESP_MAC_BT));
++#endif
+     BLEDevice::init(getDeviceName());
++#if defined(ARCH_ESP32) && defined(DUALMESH)
++    LOG_INFO("DualMesh Meshtastic BLE identity: %s", BLEDevice::getAddress().toString().c_str());
++#endif
+     BLEDevice::setPower(ESP_PWR_LVL_P9);
+ 
+     int mtuResult = BLEDevice::setMTU(kPreferredBleMtu);

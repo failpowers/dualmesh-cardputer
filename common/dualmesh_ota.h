@@ -68,27 +68,23 @@ inline Slot lastSlot(Slot fallback = Slot::Meshtastic) {
   return static_cast<Slot>(v);
 }
 
-// Point the bootloader at `slot` and restart into it. Never returns.
-inline void bootInto(Slot slot) {
+// Point the bootloader at `slot` and restart. Return false without rebooting on failure.
+inline bool bootInto(Slot slot) {
   const esp_partition_t *part = nullptr;
   if (!findSlotPartition(slot, &part)) {
-    // Partition table wasn't flashed as expected — nothing safe to do but
-    // report and halt rather than brick-loop.
-    Serial.printf("[dualmesh] FATAL: slot %d partition not found in partition table\n",
-                  static_cast<int>(slot));
-    delay(3000);
-    ESP.restart();
-    while (true) delay(1000); // ESP.restart() doesn't return immediately; never touch `part` below
+    Serial.printf("[dualmesh] slot %d partition not found\n", static_cast<int>(slot));
+    return false;
   }
-  if (slot != Slot::Launcher) rememberLastSlot(slot);
   esp_err_t err = esp_ota_set_boot_partition(part);
   if (err != ESP_OK) {
-    Serial.printf("[dualmesh] FATAL: esp_ota_set_boot_partition failed: %d\n", (int)err);
-    delay(3000);
+    Serial.printf("[dualmesh] cannot select slot %d: %d\n", static_cast<int>(slot), (int)err);
+    return false;
   }
+  if (slot != Slot::Launcher) rememberLastSlot(slot);
   Serial.flush();
   delay(50);
   esp_restart();
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -109,6 +105,8 @@ inline void bootInto(Slot slot) {
 class ReturnHook {
 public:
   static void poll() {
+    static bool began_ = false;
+    static uint32_t holdStart_ = 0;
     if (!began_) {
       pinMode(BUTTON_GPIO, INPUT_PULLUP);
       began_ = true;
@@ -120,6 +118,7 @@ public:
       else if (now - holdStart_ >= HOLD_MS) {
         Serial.println("[dualmesh] BOOT held 3s -> returning to launcher");
         bootInto(Slot::Launcher);
+        holdStart_ = now; // Avoid flooding errors if the launcher image is invalid.
       }
     } else {
       holdStart_ = 0;
@@ -129,8 +128,6 @@ public:
 private:
   static constexpr int BUTTON_GPIO = 0;
   static constexpr uint32_t HOLD_MS = 3000;
-  static inline bool began_ = false;
-  static inline uint32_t holdStart_ = 0;
 };
 
 } // namespace dualmesh

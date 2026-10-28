@@ -18,11 +18,9 @@ Arduino-framework file avoids that entirely. (dualmesh_ota.h itself is
 still guarded with `#ifdef __cplusplus` as a second line of defense, in
 case anything ever force-includes it again.)
 
-Verified against meshtastic/firmware @ develop, src/main.cpp: the local
-#include block starting around line 20 (after "power/PowerHAL.h"), and the
-loop() function starting at line 1377. If either hunk fails to apply
-because upstream has moved on, add the two lines by hand in the same
-spots — that's all this patch does.
+Pinned base: meshtastic/firmware eaba8b95bebab04c4f13a27b63e000ebdc1e5fac.
+Apply all numbered overlay patches to that exact revision before building.
+The loop() hunk starts at line 1407 in the pinned source.
 ---
 --- a/src/main.cpp
 +++ b/src/main.cpp
@@ -34,7 +32,7 @@ spots — that's all this patch does.
 
  #include "FSCommon.h"
  #include "Power.h"
-@@ -1376,6 +1377,7 @@ void scannerToSensorsMap(const std::unique_ptr<ScanI2CTwoWire> &i2cScanner, Scan
+@@ -1407,6 +1408,7 @@ void scannerToSensorsMap(const std::unique_ptr<ScanI2CTwoWire> &i2cScanner, Scan
  #ifndef PIO_UNIT_TESTING
  void loop()
  {
